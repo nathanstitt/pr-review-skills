@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { prKey, makeSnapshot, describeChanges, computeAction, formatReport, needsPendingCheck, applyPendingReview, discoverRequestedRepos, type RawPr, type Snapshot, type Change, type ChangeKind, type TriageItem, type SearchHit } from './lib.ts'
+import { prKey, makeSnapshot, findPendingReview, describeChanges, computeAction, formatReport, needsPendingCheck, applyPendingReview, discoverRequestedRepos, type RawPr, type Snapshot, type Change, type ChangeKind, type TriageItem, type SearchHit } from './lib.ts'
 
 test('prKey formats repo#number', () => {
     assert.equal(prKey('safeinsights/management-app', 123), 'safeinsights/management-app#123')
@@ -555,4 +555,65 @@ test('discoverRequestedRepos tolerates a hit with no repository', () => {
     const hits = [{ number: 5, updatedAt: '2026-08-01T00:00:00Z' } as SearchHit, hit()]
     const found = discoverRequestedRepos(hits, CONFIGURED, STALE_BEFORE)
     assert.deepEqual([...found.keys()], ['safeinsights/openstax-research-image'])
+})
+
+// An unsubmitted draft of mine is returned by `gh pr list` with state PENDING and a null
+// submittedAt. Counting it made submitting the draft look like "1 new review" from someone
+// else on the next run (iac#235).
+test('makeSnapshot ignores my own unsubmitted draft in the review counts', () => {
+    const pr = rawPr({
+        reviews: [
+            { author: { login: 'nathan' }, state: 'PENDING', submittedAt: null },
+            { author: { login: 'nathan' }, state: 'APPROVED', submittedAt: NOW },
+        ],
+    })
+    const snap = makeSnapshot(pr, 'nathan', NOW)
+    assert.equal(snap.reviewCount, 1)
+    assert.equal(snap.othersReviewCount, 0)
+})
+
+// Submitting a draft turns one PENDING row into one submitted row. With the draft counted,
+// the totals went 2 -> 2 but othersReviewCount stayed 0, so the delta was silent; the real
+// regression was on PRs where the count moved and reported my own submission back to me.
+test('submitting my own draft reports no new review', () => {
+    const before = makeSnapshot(
+        rawPr({ reviews: [{ author: { login: 'nathan' }, state: 'PENDING', submittedAt: null }] }),
+        'nathan',
+        NOW
+    )
+    const after = makeSnapshot(
+        rawPr({ reviews: [{ author: { login: 'nathan' }, state: 'APPROVED', submittedAt: NOW }] }),
+        'nathan',
+        NOW
+    )
+    assert.deepEqual(describeChanges(before, after), [])
+})
+
+test('findPendingReview finds my draft on the current head', () => {
+    const pr = rawPr({
+        headRefOid: 'head99',
+        reviews: [{ author: { login: 'nathan' }, state: 'PENDING', submittedAt: null, commit: { oid: 'head99' } }],
+    })
+    assert.equal(findPendingReview(pr, 'nathan'), true)
+})
+
+// A draft written against an older commit is stale: the branch moved on, so the comments
+// no longer line up with the code under review.
+test('findPendingReview ignores a draft left behind by new commits', () => {
+    const pr = rawPr({
+        headRefOid: 'head99',
+        reviews: [{ author: { login: 'nathan' }, state: 'PENDING', submittedAt: null, commit: { oid: 'old11' } }],
+    })
+    assert.equal(findPendingReview(pr, 'nathan'), false)
+})
+
+test('findPendingReview ignores submitted reviews and other peoples drafts', () => {
+    const pr = rawPr({
+        headRefOid: 'head99',
+        reviews: [
+            { author: { login: 'nathan' }, state: 'APPROVED', submittedAt: NOW, commit: { oid: 'head99' } },
+            { author: { login: 'bob' }, state: 'PENDING', submittedAt: null, commit: { oid: 'head99' } },
+        ],
+    })
+    assert.equal(findPendingReview(pr, 'nathan'), false)
 })

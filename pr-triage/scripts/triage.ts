@@ -4,8 +4,8 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-    applyPendingReview, computeAction, describeChanges, discoverRequestedRepos, formatReport,
-    makeSnapshot, needsPendingCheck, prKey,
+    applyPendingReview, computeAction, describeChanges, discoverRequestedRepos, findPendingReview,
+    formatReport, makeSnapshot, needsPendingCheck, prKey,
     type Change, type RawPr, type SearchHit, type Snapshot, type State, type TriageItem,
 } from './lib.ts'
 
@@ -71,31 +71,6 @@ const repos = [...configuredRepos, ...requestedByRepo.keys()]
 const items: TriageItem[] = []
 const nextPrs: Record<string, Snapshot> = {}
 
-/**
- * REST, not GraphQL: GraphQL's `reviews` connection omits unsubmitted drafts
- * entirely (verified against a PR holding a known PENDING review), so it cannot
- * answer this at all — which rules out batching the whole repo in one query.
- *
- * Pinned to the head sha so a draft written against an older commit stops
- * surfacing once the branch moves on.
- */
-function hasPendingReview(repo: string, number: number, headSha: string): boolean {
-    try {
-        // --paginate walks past the API's 30-per-page default so a pending review
-        // isn't missed on PRs with a long review history; --slurp wraps each page
-        // in its own array, so the result must be flattened before use.
-        const pages = JSON.parse(
-            gh('api', '--paginate', '--slurp', `repos/${repo}/pulls/${number}/reviews`)
-        ) as Array<Array<{ state: string; user: { login: string } | null; commit_id: string }>>
-        return pages
-            .flat()
-            .some((r) => r.state === 'PENDING' && r.user?.login === login && r.commit_id === headSha)
-    } catch {
-        errors.push(`Could not check for a pending review on ${prKey(repo, number)}; showing the plain action.`)
-        return false
-    }
-}
-
 for (const repo of repos) {
     let prs: RawPr[]
     try {
@@ -129,7 +104,7 @@ for (const repo of repos) {
         const result = computeAction({ isOwn, isNew, snapshot, changes })
         // Checked even when result is null: a draft leaves no trace in the counts, so
         // a PR with no other activity is exactly where one hides (Gap 1).
-        const pending = needsPendingCheck({ isOwn, snapshot }) && hasPendingReview(repo, pr.number, snapshot.headSha)
+        const pending = needsPendingCheck({ isOwn, snapshot }) && findPendingReview(pr, login)
         const final = pending ? applyPendingReview(result) : result
         if (final) {
             items.push({

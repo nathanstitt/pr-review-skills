@@ -14,7 +14,7 @@ export interface RawPr {
     reviewDecision: string
     reviewRequests: Array<{ login?: string }>
     comments: Array<{ author?: { login?: string } }>
-    reviews: Array<{ author?: { login?: string }; state?: string; submittedAt?: string }>
+    reviews: Array<{ author?: { login?: string }; state?: string; submittedAt?: string; commit?: { oid?: string } }>
     statusCheckRollup: Array<{ conclusion?: string; state?: string }> | null
 }
 
@@ -134,7 +134,10 @@ function latestOwnReviewState(pr: RawPr, login: string): string | undefined {
 export function makeSnapshot(pr: RawPr, login: string, now: string): Snapshot {
     const isOwn = pr.author?.login === login
     const comments = pr.comments ?? []
-    const reviews = pr.reviews ?? []
+    // My own unsubmitted draft comes back from `gh pr list` as a PENDING row, so counting it
+    // reports my own submission back to me as new activity once it lands. Dropped here rather
+    // than at each use so no count can miss it; findPendingReview is what finds drafts.
+    const reviews = (pr.reviews ?? []).filter((r) => !(r.state === 'PENDING' && r.author?.login === login))
     return {
         headSha: pr.headRefOid,
         isDraft: pr.isDraft,
@@ -250,6 +253,19 @@ export function computeAction(args: {
  */
 export function needsPendingCheck(args: { isOwn: boolean; snapshot: Snapshot }): boolean {
     return !args.isOwn && !args.snapshot.isDraft
+}
+
+/**
+ * Whether an unsubmitted draft of mine sits on the PR's current head.
+ *
+ * `gh pr list` returns PENDING rows (state PENDING, null submittedAt), so this reads the
+ * data already fetched instead of a REST call per PR. Pinned to the head sha so a draft
+ * written against an older commit stops surfacing once the branch moves on.
+ */
+export function findPendingReview(pr: RawPr, login: string): boolean {
+    return (pr.reviews ?? []).some(
+        (r) => r.state === 'PENDING' && r.author?.login === login && r.commit?.oid === pr.headRefOid
+    )
 }
 
 /**

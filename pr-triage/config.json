@@ -2,6 +2,7 @@
     "repos": [
         "safeinsights/management-app",
         "safeinsights/iac",
+        "safeinsights/website",
         "safeinsights/encryption",
         "safeinsights/qa-review"
     ]
