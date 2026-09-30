@@ -59,9 +59,26 @@ gh api repos/<owner>/<repo>/pulls/<number>/comments --paginate -q '.[] | "\(.use
 gh api repos/<owner>/<repo>/pulls/<number>/reviews -q '.[] | select(.state=="PENDING") | "\(.id) \(.node_id) \(.user.login)"'
 ```
 
-If the description links a ticket and you have a tool that can read it, read
-it. The ticket is the intent; the description is the author's account of
-meeting it.
+**Fetch the Jira tickets.** The ticket is the intent; the description is the
+author's account of meeting it. Find every key on the OTTER or SHIMP board in
+the PR title, body, and branch name:
+
+```bash
+gh pr view <number> --json title,body,headRefName -q '.title + "\n" + .body + "\n" + .headRefName' \
+  | grep -oE '\b(OTTER|SHIMP)-[0-9]+\b' | sort -u
+```
+
+For each key, call `mcp__jira-atlassian__jira_get_issue` with
+`include: "comments,remote_links"`, `comment_limit: 100`,
+`fields: "summary,status,description,issuetype,parent,issuelinks,subtasks,attachment"`
+and `update_history: false`. Read the description **and every comment**.
+Comments often add, narrow, or cancel scope after the ticket was written (a QA
+note that adds an item, a product decision that drops one). The newest decision
+wins. If the ticket has a parent epic or linked issues that the description
+refers to, fetch those too, but only the ones the ticket depends on.
+
+If no key is found, say so in the terminal output (step 11) and continue.
+If a fetch fails, say so; do not guess the ticket's contents.
 
 Do NOT try `gh pr view --json baseRepository` or similar — that field does not
 exist and the command fails. Re-fetch the head SHA right before posting;
@@ -82,6 +99,12 @@ flagged the exact places they want a second opinion. Extract them into
   consolidate later", "left for a follow-up".
 - **Flags and open items.** "worth reviewing", "flagged below", "not built",
   and any question the author asks.
+
+- **Ticket requirements.** One row per requested change from each Jira
+  ticket — each item in "expected behaviour" or acceptance criteria, and each
+  item that a comment adds or changes. Tag each row with its source
+  (`OTTER-814 desc #2`, `OTTER-814 comment 48353`). Mark rows that a later
+  comment cancelled or deferred, with that comment's id.
 
 Each row gets a verdict in step 5 — *holds*, *does not hold*, *holds only for
 case A* — with the evidence that decided it. Author-flagged decisions are the
@@ -213,6 +236,14 @@ user sees the coverage. It is for the user, not for the PR: never post it.
   internal counter used as the wait signal is a finding, and a defect it hides
   in production (a control left enabled while pending, an early render) is a
   larger one.
+- **Ticket coverage.** For each ticket-requirement row from step 2, find the
+  code that makes the change and the test that proves it. Verdict: *done*,
+  *partly done* (say which case is missing), *not done*, or *out of scope*
+  (the description or a ticket comment defers it — cite which). Also check the
+  reverse: a behaviour change in the diff that no ticket or description asks
+  for is a scope finding. A requirement that is *not done* and not deferred is
+  a Tier 0 finding. A comment that says "not blocking" or "noting it here"
+  still counts as a requirement unless someone deferred it; list it as open.
 - **Description verdicts.** Return to the rows from step 2 and fill in each
   verdict with the evidence that decided it.
 
@@ -229,7 +260,8 @@ style slip you see, and shipping a review of trivia that never mentions the
 
 **Tier 0 — Design and contracts.** Divergences from the expected shape (step
 3), contract and data findings (step 4), description claims that do not hold
-and author-flagged decisions with your verdict (step 2), scope. Most of these
+and author-flagged decisions with your verdict (step 2), ticket requirements
+that are not done or partly done (step 5), scope. Most of these
 are not line-anchored; they go in the review body, with an inline comment only
 where a specific line is the place to act.
 
@@ -610,6 +642,9 @@ Print out, in this order:
    user cannot get from skimming the diff themselves.
  * **Contracts** — one line per migration, type, action signature, route,
    permission or message change, including the ones that are fine.
+ * **Ticket coverage** — each ticket key fetched (or "no ticket found"), then
+   one line per requirement: source, verdict, and the file:line or test that
+   decided it. Put *not done* and *partly done* rows first.
  * **Description verdicts** — each claim and author-flagged decision from step
    2, with its verdict and the evidence.
  * Correctness (Tier 2) findings, and whether each was posted inline.
