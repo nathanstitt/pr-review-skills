@@ -1,6 +1,6 @@
 ---
 name: draft-pr-review
-description: Use when the user asks to review a GitHub PR (e.g. "/draft-pr-review 123", "review PR 668"). Audits the PR description's claims and decisions, reviews contracts and data model first (migrations, types, action signatures, routes, permissions), then structure (duplication, oversized functions, misplaced logic, abstraction boundaries), then correctness, and only then nits. The deliverable is a *pending* (draft) review created on GitHub via the API — inline line-anchored comments, plus a short body (one paragraph, only when something important does not anchor to a line). The investigation record is printed in the terminal for the user, not posted. Pending reviews are private to the author until they click Submit, so creating one is a low-risk write equivalent to saving a draft.
+description: Use when the user asks to review a GitHub PR (e.g. "/draft-pr-review 123", "review PR 668"). Audits the PR and delivers is a *pending* (draft) review created on GitHub via the API — inline line-anchored comments, plus a short body (one paragraph.
 ---
 
 # Draft PR Review
@@ -113,6 +113,14 @@ and they cannot be found line by line:
   chokepoint.
 - **Symptom, not cause.** A retry, a guard, a flag, or a wrapper around a
   defect that lives one level down. Go one level down and look.
+- **Test knows what the user cannot.** A flaky-test fix that waits on an
+  internal signal — a mutation counter, a mock being called, a query-cache
+  flag, a store subscription — is a symptom fix twice over. The test should
+  wait on what the user sees: the form closing, the toast, the row rendering,
+  the button re-enabling. And if the test could race, a user could too; find
+  the control that stays enabled while the work is in flight, or the state
+  that renders before the data lands. That product gap is the Tier 0 finding,
+  the test rewrite is the inline comment.
 - **A new abstraction where an existing one covers the case.** If you expected
   an extension and got a new hook, table, or component, check whether the
   existing one could have been extended. If it could not, say why in the
@@ -197,6 +205,14 @@ user sees the coverage. It is for the user, not for the PR: never post it.
   token, a column, a route — grep every place that handles the old thing and
   confirm each was updated. Four of five updated is a bug. Five places at all
   is a chokepoint finding: the next change will miss one too.
+- **Test signals.** For every test the PR adds or changes, name the signal each
+  wait or assertion keys on and ask whether a user could observe it. Read the
+  hook or handler under test to find the user-visible completion — the state
+  change that closes a form, the notification, the rendered result — and
+  whether it comes after the write. A test-only helper, a mock call, or an
+  internal counter used as the wait signal is a finding, and a defect it hides
+  in production (a control left enabled while pending, an early render) is a
+  larger one.
 - **Description verdicts.** Return to the rows from step 2 and fill in each
   verdict with the evidence that decided it.
 
@@ -267,7 +283,9 @@ problems.
 
 **Tier 2 — Correctness.** Logic errors, unhandled failure and error paths,
 swallowed exceptions, missing `await`, race conditions, N+1 queries, auth or
-permission gaps, missing test coverage for new branching behaviour.
+permission gaps, missing test coverage for new branching behaviour, and tests
+that wait on or assert against a signal the user cannot observe (see "Test
+signals" in step 5).
 
 **Tier 3 — Nits.** Naming, dead code, and comment problems. Worth mentioning
 only when the budget in step 7 leaves room. Comment findings live here and
@@ -514,16 +532,13 @@ essay. Search for each before you post:
 
 | Banned | Write instead |
 |---|---|
-| "worth a look", "worth a note", "worth doing X" | the imperative: "Please do X." |
-| "we could…", "we might want to…", "it may be worth…" | the imperative |
-| should, would, may, might, could | must, will, can — or restructure |
+| "worth a look", "worth a note", "worth doing X" | the imperative with a single softening word: "Can we do X." or "We should do X", "Please change X" |
 | "it is worth noting that", "note that", "keep in mind" | delete; state the fact |
 | "I'd suggest", "I think", "in my opinion" | delete; the comment is already yours |
 | "simply", "just", "clearly", "obviously" | delete |
-| ensure | make sure that |
 | semicolons | two sentences |
 
-Keep in mind that directness is not rudeness: the
+Keep in mind that **directness is not rudeness**: the
 imperative names a change, it does not judge the author and respects their time
 by keeping the request clear and concise.
 
@@ -538,8 +553,8 @@ for s in re.split(r'(?<=[.!?])\s+',t):
     if len(s.split())>25: print('LONG', len(s.split()), s[:60])
 " /tmp/claude/comment.md
 
-# 2. banned words, and 3. total length
-grep -nEi "worth a|we could|we might|should|would|may |might|could|it is worth|note that|I'd suggest|I think|simply|just |clearly|obviously|ensure|;" /tmp/claude/comment.md
+2. total length
+
 wc -w /tmp/claude/comment.md   # under 150, code blocks excluded
 ```
 
