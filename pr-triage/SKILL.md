@@ -7,14 +7,25 @@ description: Use when asked to triage PRs, "what PRs need my attention", "any ne
 
 ## Workflow
 
-1. Run: `pnpm --dir ~/code/si/.claude/skills/pr-triage triage`
-   - The default run marks everything it prints as seen. If the user only wants a
-     peek without marking seen, pass `--dry-run`. `--json` gives structured output
-     if you need to reason over items programmatically.
-2. Relay the report **verbatim** — do not summarize, reorder, or reformat it.
-3. If there are actions, ask which one(s) to take now. Do not start any action
+1. Peek: `pnpm --dir ~/code/si/.claude/skills/pr-triage triage --dry-run --json`.
+2. Summarize each Review / Re-review item whose `summary` is empty. Start one
+   subagent per item, all in parallel, with `model: "sonnet"`. Tell each one to
+   follow `~/code/si/.claude/skills/draft-pr-review/summary.md` for `<repo>` and
+   `<number>`, and to return only the step 5 block. For a Re-review, also pass
+   the compare range from the `commits` change's `url` (the part after
+   `/compare/`). Save each block:
+   `pnpm --dir ~/code/si/.claude/skills/pr-triage save-summary '<key>' <headSha> <block-file>`.
+   Skip this step when no item needs a summary.
+3. Run: `pnpm --dir ~/code/si/.claude/skills/pr-triage triage`
+   - This run marks everything it prints as seen, and prints the saved summaries
+     under their items. If the user only wants a peek without marking seen, pass
+     `--dry-run`.
+   - `summary: none for this head` means the PR got new commits after step 1.
+     Leave it; the next triage run summarizes it.
+4. Relay the report **verbatim** — do not summarize, reorder, or reformat it.
+5. If there are actions, ask which one(s) to take now. Do not start any action
    unprompted.
-4. Chain into the picked actions:
+6. Chain into the picked actions:
    - **Review** / **Re-review** → invoke the draft-pr-review skill for that PR
      number (run it from the PR's repo directory under `~/code/si/`, or pass
      `--repo`-aware commands as that skill describes).
@@ -26,7 +37,7 @@ description: Use when asked to triage PRs, "what PRs need my attention", "any ne
      simplification opportunities. No GitHub writes.
    - **Respond** / **Fix CI** / **Approved — merge?** → these are the owner's own PRs;
      help investigate as asked (e.g. `gh pr checks`, reading new comments).
-5. **Always close with a recap**, after the picked actions are done — especially
+7. **Always close with a recap**, after the picked actions are done — especially
    after drafting reviews, whose per-PR write-ups are long enough that the first
    ones scroll out of view. The recap is the last thing in the response, below any
    detail, and covers **every** PR that was acted on, not just the last one. One
@@ -83,6 +94,9 @@ time", "graph team velocity"):
 - Triage memory: `state.json` next to this file — one snapshot per open PR.
   Deleting it resets memory (everything surfaces again). To "unsee" a single PR,
   delete just that PR's key.
+- Summary cache: `summaries.json` next to this file — one block per PR, keyed to
+  its head sha, so a PR is summarized again only after new commits. Entries for
+  PRs that are no longer open are pruned on each non-dry run.
 - Stats cache: `stats-history.json` next to this file — deleting it forces a full
   history refetch on the next stats run; nothing else is lost.
 - Neither script ever writes to GitHub.

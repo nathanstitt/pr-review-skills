@@ -59,26 +59,9 @@ gh api repos/<owner>/<repo>/pulls/<number>/comments --paginate -q '.[] | "\(.use
 gh api repos/<owner>/<repo>/pulls/<number>/reviews -q '.[] | select(.state=="PENDING") | "\(.id) \(.node_id) \(.user.login)"'
 ```
 
-**Fetch the Jira tickets.** The ticket is the intent; the description is the
-author's account of meeting it. Find every key on the OTTER or SHIMP board in
-the PR title, body, and branch name:
-
-```bash
-gh pr view <number> --json title,body,headRefName -q '.title + "\n" + .body + "\n" + .headRefName' \
-  | grep -oE '\b(OTTER|SHIMP)-[0-9]+\b' | sort -u
-```
-
-For each key, call `mcp__jira-atlassian__jira_get_issue` with
-`include: "comments,remote_links"`, `comment_limit: 100`,
-`fields: "summary,status,description,issuetype,parent,issuelinks,subtasks,attachment"`
-and `update_history: false`. Read the description **and every comment**.
-Comments often add, narrow, or cancel scope after the ticket was written (a QA
-note that adds an item, a product decision that drops one). The newest decision
-wins. If the ticket has a parent epic or linked issues that the description
-refers to, fetch those too, but only the ones the ticket depends on.
-
-If no key is found, say so in the terminal output (step 11) and continue.
-If a fetch fails, say so; do not guess the ticket's contents.
+**Fetch the Jira tickets** as `summary.md` (next to this file) step 1
+describes. If no key is found, say so in the terminal output (step 11) and
+continue.
 
 Do NOT try `gh pr view --json baseRepository` or similar — that field does not
 exist and the command fails. Re-fetch the head SHA right before posting;
@@ -101,10 +84,7 @@ flagged the exact places they want a second opinion. Extract them into
   and any question the author asks.
 
 - **Ticket requirements.** One row per requested change from each Jira
-  ticket — each item in "expected behaviour" or acceptance criteria, and each
-  item that a comment adds or changes. Tag each row with its source
-  (`OTTER-814 desc #2`, `OTTER-814 comment 48353`). Mark rows that a later
-  comment cancelled or deferred, with that comment's id.
+  ticket, built by the rules in `summary.md` step 2.
 
 Each row gets a verdict in step 5 — *holds*, *does not hold*, *holds only for
 case A* — with the evidence that decided it. Author-flagged decisions are the
@@ -636,6 +616,9 @@ this section can be as long as it needs to be.
 
 Print out, in this order:
 
+ * **The summary block** from `summary.md` step 5, filled from this review's
+   whole-file read rather than the diff alone. pr-triage shows the same block
+   from a diff-only pass; this one supersedes it.
  * **The structural read** — expected shape (step 3) against actual, and the
    Tier 0/1 findings, whether or not each became an inline comment. If Tiers 0
    and 1 were clean, say that plainly. This leads because it is the part the

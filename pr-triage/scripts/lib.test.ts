@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { prKey, makeSnapshot, findPendingReview, describeChanges, computeAction, formatReport, needsPendingCheck, applyPendingReview, discoverRequestedRepos, type RawPr, type Snapshot, type Change, type ChangeKind, type TriageItem, type SearchHit } from './lib.ts'
+import { prKey, makeSnapshot, findPendingReview, describeChanges, computeAction, formatReport, needsPendingCheck, applyPendingReview, discoverRequestedRepos, cachedSummary, pruneSummaries, type RawPr, type Snapshot, type Change, type ChangeKind, type TriageItem, type SearchHit } from './lib.ts'
 
 test('prKey formats repo#number', () => {
     assert.equal(prKey('safeinsights/management-app', 123), 'safeinsights/management-app#123')
@@ -367,6 +367,7 @@ function item(overrides: Partial<TriageItem> = {}): TriageItem {
         action: 'review',
         priority: 2,
         changes: [],
+        headSha: 'abc123',
         ...overrides,
     }
 }
@@ -616,4 +617,31 @@ test('findPendingReview ignores submitted reviews and other peoples drafts', () 
         ],
     })
     assert.equal(findPendingReview(pr, 'nathan'), false)
+})
+
+test('cachedSummary returns the block only for the cached head', () => {
+    const cache = { 'o/r#1': { sha: 'abc', block: 'changes: x' } }
+    assert.equal(cachedSummary(cache, 'o/r#1', 'abc'), 'changes: x')
+    assert.equal(cachedSummary(cache, 'o/r#1', 'def'), undefined)
+    assert.equal(cachedSummary(cache, 'o/r#2', 'abc'), undefined)
+})
+
+test('pruneSummaries drops PRs that are no longer tracked', () => {
+    const cache = { 'o/r#1': { sha: 'a', block: 'x' }, 'o/r#2': { sha: 'b', block: 'y' } }
+    assert.deepEqual(pruneSummaries(cache, ['o/r#2']), { 'o/r#2': { sha: 'b', block: 'y' } })
+})
+
+test('formatReport indents a cached summary under its review item', () => {
+    const report = formatReport([item({ summary: 'changes: adds X\nUI:      none\n' })], { firstRun: false, errors: [] })
+    assert.match(report, /\n {3}changes: adds X\n {3}UI: {6}none/)
+})
+
+test('formatReport flags a review item with no summary', () => {
+    const report = formatReport([item()], { firstRun: false, errors: [] })
+    assert.match(report, /summary: none for this head/)
+})
+
+test('formatReport adds no summary line to non-review actions', () => {
+    const report = formatReport([item({ action: 'fix-ci', priority: 1, isOwn: true })], { firstRun: false, errors: [] })
+    assert.doesNotMatch(report, /summary/)
 })

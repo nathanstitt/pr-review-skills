@@ -72,6 +72,28 @@ export interface TriageItem {
     myReviewState?: string
     /** Set when a pending draft of mine sits on the current head. */
     hasPendingReview?: boolean
+    headSha: string
+    /** Cached draft-pr-review summary.md block for this head, when one exists. */
+    summary?: string
+}
+
+/** Keyed by prKey; one entry per PR, replaced when its head moves. */
+export type SummaryCache = Record<string, { sha: string; block: string }>
+
+const SUMMARY_ACTIONS: ReadonlySet<ActionKind> = new Set(['review', 're-review'])
+
+export function needsSummary(it: Pick<TriageItem, 'action'>): boolean {
+    return SUMMARY_ACTIONS.has(it.action)
+}
+
+export function cachedSummary(cache: SummaryCache, key: string, sha: string): string | undefined {
+    const hit = cache[key]
+    return hit?.sha === sha ? hit.block : undefined
+}
+
+export function pruneSummaries(cache: SummaryCache, liveKeys: Iterable<string>): SummaryCache {
+    const live = new Set(liveKeys)
+    return Object.fromEntries(Object.entries(cache).filter(([key]) => live.has(key)))
 }
 
 export interface SearchHit {
@@ -343,6 +365,11 @@ export function formatReport(
             if (diff) lines.push(`   diff since last seen: ${diff}`)
             const note = noteFor(it)
             if (note) lines.push(`   note: ${note}`)
+            if (it.summary) {
+                for (const line of it.summary.trim().split('\n')) lines.push(`   ${line}`)
+            } else if (needsSummary(it)) {
+                lines.push('   summary: none for this head')
+            }
             lines.push(`   ${it.url}`)
         })
     }

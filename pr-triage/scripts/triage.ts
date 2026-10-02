@@ -4,14 +4,15 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-    applyPendingReview, computeAction, describeChanges, discoverRequestedRepos, findPendingReview,
-    formatReport, makeSnapshot, needsPendingCheck, prKey,
-    type Change, type RawPr, type SearchHit, type Snapshot, type State, type TriageItem,
+    applyPendingReview, cachedSummary, computeAction, describeChanges, discoverRequestedRepos, findPendingReview,
+    formatReport, makeSnapshot, needsPendingCheck, needsSummary, prKey, pruneSummaries,
+    type Change, type RawPr, type SearchHit, type Snapshot, type State, type SummaryCache, type TriageItem,
 } from './lib.ts'
 
 const SKILL_DIR = join(dirname(fileURLToPath(import.meta.url)), '..')
 const CONFIG_PATH = join(SKILL_DIR, 'config.json')
 const STATE_PATH = join(SKILL_DIR, 'state.json')
+const SUMMARIES_PATH = join(SKILL_DIR, 'summaries.json')
 
 const argv = process.argv.slice(2)
 const dryRun = argv.includes('--dry-run')
@@ -43,6 +44,7 @@ function loadState(): { state: State; firstRun: boolean } {
 
 const { repos: configuredRepos } = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as { repos: string[] }
 const { state, firstRun } = loadState()
+const summaries: SummaryCache = existsSync(SUMMARIES_PATH) ? JSON.parse(readFileSync(SUMMARIES_PATH, 'utf8')) : {}
 const login = state.login ?? gh('api', 'user', '-q', '.login').trim()
 const now = new Date().toISOString()
 
@@ -107,11 +109,12 @@ for (const repo of repos) {
         const pending = needsPendingCheck({ isOwn, snapshot }) && findPendingReview(pr, login)
         const final = pending ? applyPendingReview(result) : result
         if (final) {
+            const summary = needsSummary(final) ? cachedSummary(summaries, key, snapshot.headSha) : undefined
             items.push({
                 key, repo,
                 number: pr.number, title: pr.title, author: pr.author?.login ?? 'ghost', url: pr.url,
                 isOwn, isNew, changes, myReviewState: snapshot.myReviewState,
-                hasPendingReview: pending, ...final,
+                hasPendingReview: pending, headSha: snapshot.headSha, summary, ...final,
             })
         } else if (prev) {
             snapshot.surfacedAt = prev.surfacedAt
@@ -144,4 +147,7 @@ if (dryRun) {
     const next: State = { login, prs: nextPrs }
     writeFileSync(STATE_PATH + '.tmp', JSON.stringify(next, null, 2) + '\n')
     renameSync(STATE_PATH + '.tmp', STATE_PATH)
+    const kept = pruneSummaries(summaries, Object.keys(nextPrs))
+    writeFileSync(SUMMARIES_PATH + '.tmp', JSON.stringify(kept, null, 2) + '\n')
+    renameSync(SUMMARIES_PATH + '.tmp', SUMMARIES_PATH)
 }
