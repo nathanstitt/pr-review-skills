@@ -1,32 +1,20 @@
 ---
 name: pr-triage
-description: Use when asked to triage PRs, "what PRs need my attention", "any new PRs?", or invokes /pr-triage. Surfaces only NEW actions (review, re-review, respond, fix CI, architecture-check drafts) across the SafeInsights repos plus any repo where a review was requested from you, remembering what was already shown. Running it marks surfaced PRs as seen. Also covers team PR stats ("dev velocity", "response times", "how fast do I review") and plotting those stats over time ("plot AI usage", "graph velocity").
+description: Use when asked to triage PRs, "what PRs need my attention", "any new PRs?", or invokes /pr-triage. Surfaces only NEW actions (review, re-review, respond, fix CI, architecture-check drafts) across the SafeInsights repos plus any repo where a review was requested from you, remembering what was already shown, and lists on every run any PR with no review in 2+ days. Running it marks surfaced PRs as seen. Also covers team PR stats ("dev velocity", "response times", "how fast do I review") and plotting those stats over time ("plot AI usage", "graph velocity").
 ---
 
 # PR Triage
 
 ## Workflow
 
-1. Peek: `pnpm --dir ~/code/si/.claude/skills/pr-triage triage --dry-run --json`.
-2. Summarize each Review / Re-review item whose `summary` is empty. Start one
-   subagent per item, all in parallel, with `model: "sonnet"`. Tell each one to
-   follow `~/code/si/.claude/skills/draft-pr-review/summary.md` for `<repo>` and
-   `<number>`, and to return only the step 5 block. For a Re-review, also pass
-   the compare range from the `commits` change's `url` (the part after
-   `/compare/`). Save each block:
-   `pnpm --dir ~/code/si/.claude/skills/pr-triage save-summary '<key>' <headSha> <block-file>`.
-   Skip this step when no item needs a summary.
-3. Run: `pnpm --dir ~/code/si/.claude/skills/pr-triage triage`
-   - This run marks everything it prints as seen, and prints the saved summaries
-     under their items. If the user only wants a peek without marking seen, pass
-     `--dry-run`.
-   - `summary: none for this head` means the PR got new commits after step 1.
-     Leave it; the next triage run summarizes it.
-4. Relay the report **verbatim** — do not summarize, reorder, or reformat it.
-5. If there are actions, ask which one(s) to take now. Do not start any action
+1. Run: `pnpm --dir ~/code/si/.claude/skills/pr-triage triage`
+   - This run marks everything it prints as seen. If the user only wants a peek
+     without marking seen, pass `--dry-run`.
+2. Relay the report **verbatim** — do not summarize, reorder, or reformat it.
+3. If there are actions or waiting PRs, ask which one(s) to take now. Do not start any action
    unprompted.
-6. Chain into the picked actions:
-   - **Review** / **Re-review** → invoke the draft-pr-review skill for that PR
+4. Chain into the picked actions:
+   - **Review** / **Re-review** / **Waiting on review** → invoke the draft-pr-review skill for that PR
      number (run it from the PR's repo directory under `~/code/si/`, or pass
      `--repo`-aware commands as that skill describes).
    - **Finish & submit your pending review** → a PENDING review already
@@ -37,7 +25,7 @@ description: Use when asked to triage PRs, "what PRs need my attention", "any ne
      simplification opportunities. No GitHub writes.
    - **Respond** / **Fix CI** / **Approved — merge?** → these are the owner's own PRs;
      help investigate as asked (e.g. `gh pr checks`, reading new comments).
-7. **Always close with a recap**, after the picked actions are done — especially
+5. **Always close with a recap**, after the picked actions are done — especially
    after drafting reviews, whose per-PR write-ups are long enough that the first
    ones scroll out of view. The recap is the last thing in the response, below any
    detail, and covers **every** PR that was acted on, not just the last one. One
@@ -94,12 +82,16 @@ time", "graph team velocity"):
   such a repo, not everything else open there. Requests whose PR has not been updated
   in 180 days are skipped, which keeps long-abandoned ones from resurfacing. If a repo
   starts showing up often, add it to `config.json` to get full tracking of it.
+- **Waiting on review** is not change-based and ignores `state.json`. A PR is
+  listed on every run while it is open, not a draft, not yours, not a bot's, and
+  has had no review from anyone but its author in 2+ days — never reviewed and
+  opened 2+ days ago, or commits or comments after its last review. It is left
+  out when the same PR is already in the action list, and when nothing has
+  happened on it for 14+ days (any push or comment brings it back). The day
+  counts are `REVIEW_WAIT_DAYS` and `WAITING_IDLE_DAYS` in `scripts/lib.ts`.
 - Triage memory: `state.json` next to this file — one snapshot per open PR.
   Deleting it resets memory (everything surfaces again). To "unsee" a single PR,
   delete just that PR's key.
-- Summary cache: `summaries.json` next to this file — one block per PR, keyed to
-  its head sha, so a PR is summarized again only after new commits. Entries for
-  PRs that are no longer open are pruned on each non-dry run.
 - Stats cache: `stats-history.json` next to this file — deleting it forces a full
   history refetch on the next stats run; nothing else is lost.
 - Neither script ever writes to GitHub.

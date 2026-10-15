@@ -10,10 +10,12 @@ export interface RawPr {
     url: string
     author: { login: string } | null
     isDraft: boolean
+    createdAt?: string
+    updatedAt?: string
     headRefOid: string
     reviewDecision: string
     reviewRequests: Array<{ login?: string }>
-    comments: Array<{ author?: { login?: string } }>
+    comments: Array<{ author?: { login?: string }; createdAt?: string }>
     reviews: Array<{ author?: { login?: string }; state?: string; submittedAt?: string; commit?: { oid?: string } }>
     statusCheckRollup: Array<{ conclusion?: string; state?: string }> | null
 }
@@ -72,28 +74,6 @@ export interface TriageItem {
     myReviewState?: string
     /** Set when a pending draft of mine sits on the current head. */
     hasPendingReview?: boolean
-    headSha: string
-    /** Cached draft-pr-review summary.md block for this head, when one exists. */
-    summary?: string
-}
-
-/** Keyed by prKey; one entry per PR, replaced when its head moves. */
-export type SummaryCache = Record<string, { sha: string; block: string }>
-
-const SUMMARY_ACTIONS: ReadonlySet<ActionKind> = new Set(['review', 're-review'])
-
-export function needsSummary(it: Pick<TriageItem, 'action'>): boolean {
-    return SUMMARY_ACTIONS.has(it.action)
-}
-
-export function cachedSummary(cache: SummaryCache, key: string, sha: string): string | undefined {
-    const hit = cache[key]
-    return hit?.sha === sha ? hit.block : undefined
-}
-
-export function pruneSummaries(cache: SummaryCache, liveKeys: Iterable<string>): SummaryCache {
-    const live = new Set(liveKeys)
-    return Object.fromEntries(Object.entries(cache).filter(([key]) => live.has(key)))
 }
 
 export interface SearchHit {
@@ -306,6 +286,60 @@ export function applyPendingReview(
     return { action: 'finish-pending', priority: Math.min(result?.priority ?? 2, 2) }
 }
 
+export const REVIEW_WAIT_DAYS = 2
+// An abandoned PR would otherwise be listed forever. Any push or comment brings it back.
+export const WAITING_IDLE_DAYS = 14
+const DAY_MS = 86_400_000
+
+export interface WaitingItem {
+    key: string
+    repo: string
+    number: number
+    title: string
+    author: string
+    url: string
+    reason: string
+}
+
+const daysAgo = (from: string, now: string) => Math.floor((Date.parse(now) - Date.parse(from)) / DAY_MS)
+
+/**
+ * Why a PR has waited REVIEW_WAIT_DAYS or more for a review, or null if it has not.
+ *
+ * The change report shows a PR once and then marks it seen, so a review skipped on
+ * that one run never comes back. This check reads only the PR itself, not state.json,
+ * so the PR is listed on every run until someone reviews it.
+ *
+ * A review from anyone counts, not only mine. The author's own reviews are thread
+ * replies, so they count as activity instead.
+ */
+export function waitingForReview(pr: RawPr, login: string, now: string): string | null {
+    const author = pr.author?.login ?? ''
+    if (pr.isDraft || author === login || BOT_AUTHOR_RE.test(author)) return null
+    if (pr.updatedAt && daysAgo(pr.updatedAt, now) >= WAITING_IDLE_DAYS) return null
+    const submitted = (pr.reviews ?? []).filter((r) => r.state !== 'PENDING' && r.submittedAt)
+    const last = submitted
+        .filter((r) => r.author?.login !== author && !BOT_AUTHOR_RE.test(r.author?.login ?? ''))
+        .sort((a, b) => (a.submittedAt as string).localeCompare(b.submittedAt as string))
+        .at(-1)
+    if (!last) {
+        if (!pr.createdAt || daysAgo(pr.createdAt, now) < REVIEW_WAIT_DAYS) return null
+        return `opened ${daysAgo(pr.createdAt, now)}d ago, never reviewed`
+    }
+    const since = last.submittedAt as string
+    if (daysAgo(since, now) < REVIEW_WAIT_DAYS) return null
+    const activity: string[] = []
+    if (last.commit?.oid && last.commit.oid !== pr.headRefOid) activity.push('new commits')
+    const isReply = (who: string, at?: string) =>
+        who !== login && !BOT_AUTHOR_RE.test(who) && !!at && at > since
+    const replied =
+        (pr.comments ?? []).some((c) => isReply(c.author?.login ?? '', c.createdAt)) ||
+        submitted.some((r) => r.author?.login === author && isReply(author, r.submittedAt))
+    if (replied) activity.push('new comments')
+    if (activity.length === 0) return null
+    return `${activity.join(' and ')} since the last review (${last.author?.login ?? 'ghost'}, ${daysAgo(since, now)}d ago)`
+}
+
 const ACTION_LABELS: Record<ActionKind, string> = {
     'fix-ci': 'Fix CI',
     review: 'Review',
@@ -343,12 +377,13 @@ function noteFor(it: TriageItem): string | undefined {
 
 export function formatReport(
     items: TriageItem[],
-    opts: { firstRun: boolean; errors: string[] }
+    opts: { firstRun: boolean; errors: string[]; waiting?: WaitingItem[] }
 ): string {
     const lines: string[] = []
+    const waiting = opts.waiting ?? []
     if (opts.firstRun) lines.push('First run — no prior state, so every open PR surfaces as new.', '')
     if (items.length === 0) {
-        lines.push('No new PR actions. All caught up.')
+        lines.push(waiting.length === 0 ? 'No new PR actions. All caught up.' : 'No new PR actions.')
     } else {
         lines.push(`${items.length} PR action${items.length === 1 ? '' : 's'}:`, '')
         const sorted = [...items].sort(
@@ -359,17 +394,23 @@ export function formatReport(
             const who = it.isOwn ? 'you' : it.author
             lines.push(`${i + 1}. ${ACTION_LABELS[it.action]} — ${shortRepo}#${it.number} "${it.title}" by ${who}`)
             if (it.changes.length > 0) lines.push(`   changed: ${it.changes.map((c) => c.text).join(', ')}`)
-            // Its own line rather than inline in the summary: the compare url is long
+            // Its own line rather than inline in the change list: the compare url is long
             // enough to wrap, which would break up the change list mid-phrase.
             const diff = it.changes.find((c) => c.url)?.url
             if (diff) lines.push(`   diff since last seen: ${diff}`)
             const note = noteFor(it)
             if (note) lines.push(`   note: ${note}`)
-            if (it.summary) {
-                for (const line of it.summary.trim().split('\n')) lines.push(`   ${line}`)
-            } else if (needsSummary(it)) {
-                lines.push('   summary: none for this head')
-            }
+            lines.push(`   ${it.url}`)
+        })
+    }
+    if (waiting.length > 0) {
+        // Numbering continues from the action list so either list can be picked by number.
+        lines.push('', `${waiting.length} PR${waiting.length === 1 ? '' : 's'} with no review in ${REVIEW_WAIT_DAYS}+ days (listed every run):`, '')
+        const sorted = [...waiting].sort((a, b) => a.repo.localeCompare(b.repo) || a.number - b.number)
+        sorted.forEach((it, i) => {
+            const shortRepo = it.repo.split('/')[1] ?? it.repo
+            lines.push(`${items.length + i + 1}. Waiting on review — ${shortRepo}#${it.number} "${it.title}" by ${it.author}`)
+            lines.push(`   ${it.reason}`)
             lines.push(`   ${it.url}`)
         })
     }

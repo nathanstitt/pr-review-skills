@@ -5,7 +5,6 @@
     "scripts": {
         "triage": "node scripts/triage.ts",
         "stats": "node scripts/stats.ts",
-        "test": "node --test scripts/lib.test.ts scripts/stats-lib.test.ts",
-        "save-summary": "node scripts/save-summary.ts"
+        "test": "node --test scripts/lib.test.ts scripts/stats-lib.test.ts"
     }
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { prKey, makeSnapshot, findPendingReview, describeChanges, computeAction, formatReport, needsPendingCheck, applyPendingReview, discoverRequestedRepos, cachedSummary, pruneSummaries, type RawPr, type Snapshot, type Change, type ChangeKind, type TriageItem, type SearchHit } from './lib.ts'
+import { prKey, makeSnapshot, findPendingReview, describeChanges, computeAction, formatReport, needsPendingCheck, applyPendingReview, discoverRequestedRepos, waitingForReview, type RawPr, type Snapshot, type Change, type ChangeKind, type TriageItem, type SearchHit } from './lib.ts'
 
 test('prKey formats repo#number', () => {
     assert.equal(prKey('safeinsights/management-app', 123), 'safeinsights/management-app#123')
@@ -367,7 +367,6 @@ function item(overrides: Partial<TriageItem> = {}): TriageItem {
         action: 'review',
         priority: 2,
         changes: [],
-        headSha: 'abc123',
         ...overrides,
     }
 }
@@ -619,29 +618,72 @@ test('findPendingReview ignores submitted reviews and other peoples drafts', () 
     assert.equal(findPendingReview(pr, 'nathan'), false)
 })
 
-test('cachedSummary returns the block only for the cached head', () => {
-    const cache = { 'o/r#1': { sha: 'abc', block: 'changes: x' } }
-    assert.equal(cachedSummary(cache, 'o/r#1', 'abc'), 'changes: x')
-    assert.equal(cachedSummary(cache, 'o/r#1', 'def'), undefined)
-    assert.equal(cachedSummary(cache, 'o/r#2', 'abc'), undefined)
+// NOW is 2026-08-07T12:00:00Z, so these are 3 days and 1 day before it.
+const OLD = '2026-08-04T12:00:00Z'
+const RECENT = '2026-08-06T12:00:00Z'
+
+test('waitingForReview lists a PR never reviewed for 2+ days', () => {
+    assert.equal(waitingForReview(rawPr({ createdAt: OLD }), 'nathan', NOW), 'opened 3d ago, never reviewed')
+    assert.equal(waitingForReview(rawPr({ createdAt: RECENT }), 'nathan', NOW), null)
 })
 
-test('pruneSummaries drops PRs that are no longer tracked', () => {
-    const cache = { 'o/r#1': { sha: 'a', block: 'x' }, 'o/r#2': { sha: 'b', block: 'y' } }
-    assert.deepEqual(pruneSummaries(cache, ['o/r#2']), { 'o/r#2': { sha: 'b', block: 'y' } })
+test('waitingForReview lists commits pushed after a review 2+ days old', () => {
+    const pr = rawPr({
+        createdAt: OLD,
+        headRefOid: 'bbb222',
+        reviews: [{ author: { login: 'bob' }, state: 'COMMENTED', submittedAt: OLD, commit: { oid: 'aaa111' } }],
+    })
+    assert.equal(waitingForReview(pr, 'nathan', NOW), 'new commits since the last review (bob, 3d ago)')
 })
 
-test('formatReport indents a cached summary under its review item', () => {
-    const report = formatReport([item({ summary: 'changes: adds X\nUI:      none\n' })], { firstRun: false, errors: [] })
-    assert.match(report, /\n {3}changes: adds X\n {3}UI: {6}none/)
+test('waitingForReview counts author replies after the review as activity', () => {
+    const later = '2026-08-05T12:00:00Z'
+    const reviews = [{ author: { login: 'bob' }, state: 'CHANGES_REQUESTED', submittedAt: OLD, commit: { oid: 'aaa111' } }]
+    const viaThread = rawPr({ reviews: [...reviews, { author: { login: 'alice' }, state: 'COMMENTED', submittedAt: later }] })
+    const viaComment = rawPr({ reviews, comments: [{ author: { login: 'alice' }, createdAt: later }] })
+    assert.match(waitingForReview(viaThread, 'nathan', NOW) ?? '', /^new comments since/)
+    assert.match(waitingForReview(viaComment, 'nathan', NOW) ?? '', /^new comments since/)
 })
 
-test('formatReport flags a review item with no summary', () => {
-    const report = formatReport([item()], { firstRun: false, errors: [] })
-    assert.match(report, /summary: none for this head/)
+test('waitingForReview skips PRs with a recent review or no activity since', () => {
+    const reviewedRecently = rawPr({
+        headRefOid: 'bbb222',
+        reviews: [{ author: { login: 'bob' }, state: 'APPROVED', submittedAt: RECENT, commit: { oid: 'aaa111' } }],
+    })
+    const quietSince = rawPr({
+        comments: [
+            { author: { login: 'github-actions' }, createdAt: RECENT },
+            { author: { login: 'nathan' }, createdAt: RECENT },
+        ],
+        reviews: [{ author: { login: 'bob' }, state: 'APPROVED', submittedAt: OLD, commit: { oid: 'aaa111' } }],
+    })
+    assert.equal(waitingForReview(reviewedRecently, 'nathan', NOW), null)
+    assert.equal(waitingForReview(quietSince, 'nathan', NOW), null)
 })
 
-test('formatReport adds no summary line to non-review actions', () => {
-    const report = formatReport([item({ action: 'fix-ci', priority: 1, isOwn: true })], { firstRun: false, errors: [] })
-    assert.doesNotMatch(report, /summary/)
+test('waitingForReview skips drafts, my own PRs and bot PRs', () => {
+    assert.equal(waitingForReview(rawPr({ createdAt: OLD, isDraft: true }), 'nathan', NOW), null)
+    assert.equal(waitingForReview(rawPr({ createdAt: OLD, author: { login: 'nathan' } }), 'nathan', NOW), null)
+    assert.equal(waitingForReview(rawPr({ createdAt: OLD, author: { login: 'dependabot[bot]' } }), 'nathan', NOW), null)
+})
+
+test('waitingForReview skips a PR idle for 14+ days', () => {
+    assert.equal(waitingForReview(rawPr({ createdAt: OLD, updatedAt: '2026-07-24T12:00:00Z' }), 'nathan', NOW), null)
+    assert.match(waitingForReview(rawPr({ createdAt: OLD, updatedAt: '2026-07-25T12:00:00Z' }), 'nathan', NOW) ?? '', /never reviewed/)
+})
+
+test('waitingForReview ignores the author reviewing their own PR', () => {
+    const pr = rawPr({
+        createdAt: OLD,
+        reviews: [{ author: { login: 'alice' }, state: 'COMMENTED', submittedAt: RECENT, commit: { oid: 'aaa111' } }],
+    })
+    assert.equal(waitingForReview(pr, 'nathan', NOW), 'opened 3d ago, never reviewed')
+})
+
+test('formatReport lists waiting PRs after the actions, continuing the numbering', () => {
+    const waiting = [{ ...item({ number: 7 }), reason: 'opened 3d ago, never reviewed' }]
+    const report = formatReport([item()], { firstRun: false, errors: [], waiting })
+    assert.match(report, /1 PR with no review in 2\+ days/)
+    assert.match(report, /2\. Waiting on review — management-app#7 "Test PR" by alice\n   opened 3d ago, never reviewed/)
+    assert.doesNotMatch(formatReport([], { firstRun: false, errors: [], waiting }), /All caught up/)
 })
