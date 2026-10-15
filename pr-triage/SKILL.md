@@ -44,7 +44,10 @@ description: Use when asked to triage PRs, "what PRs need my attention", "any ne
    line each:
    - PR ref + one-clause outcome (`draft posted, 6 comments` / `reviewed, no draft
      — nothing worth flagging` / `investigated, CI red on X`).
-   - The draft URL, if one was created. Never make him scroll up to find a link.
+   - A link on **every** line, as a markdown link on the PR ref itself
+     (`[iac#262](<url>)`), not a bare URL: the draft review URL if one was created,
+     else the PR URL. This includes PRs with no draft and PRs that were skipped or
+     FYI-only. Never make him scroll up to find a link.
    - What he has to do next, if anything — submit a draft, rerun a suite, reply to
      someone. Say "nothing needed" outright when that's the answer.
 
